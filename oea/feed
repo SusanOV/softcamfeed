@@ -1,0 +1,175 @@
+#!/bin/bash
+
+PY=python
+
+[[ -e /usr/bin/python3 ]] && PY=python3
+
+BASE_FEED=http://updates.mynonpublic.com/oea
+
+export D=${D}
+
+get_oever() {
+	OEVER=$($PY - <<END
+import sys
+sys.path.append('/usr/lib/enigma2/python')
+try:
+	from boxbranding import getOEVersion
+	oever = getOEVersion()
+	print(oever)
+except:
+	print("unknown")
+END
+	)
+	OEVER=$(echo $OEVER | sed "s/OE-Alliance //")
+	if [ "x$OEVER" == "xunknown" ]; then
+		if [[ -x "/usr/bin/openssl" ]]; then
+			SSLVER=$(openssl version | awk '{ print $2 }')
+			case "$SSLVER" in
+				1.0.2a|1.0.2b|1.0.2c|1.0.2d|1.0.2e|1.0.2f)
+					OEVER="unknown"
+					;;
+				1.0.2g|1.0.2h|1.0.2i)
+					OEVER="3.4"
+					;;
+				1.0.2j)
+					OEVER="4.0"
+					;;
+				1.0.2k|1.0.2l)
+					OEVER="4.1"
+					;;
+				1.0.2m|1.0.2n|1.0.2o|1.0.2p)
+					OEVER="4.2"
+					;;
+				1.0.2q|1.0.2r|1.0.2s)
+					OEVER="4.3"
+					;;
+				*)
+					OEVER="unknown"
+					;;
+			esac
+		fi
+	fi
+}
+
+get_arch() {
+	ARCH=$($PY - <<END
+import sys
+sys.path.append('/usr/lib/enigma2/python')
+try:
+	from boxbranding import getImageArch
+	arch = getImageArch()
+	print(arch)
+except:
+	print("unknown")
+END
+	)
+	if [ "x$ARCH" == "xunknown" ]; then
+		case "$OEVER" in
+			3.4|4.0)
+				ARCH="armv7a-neon"
+				;;
+			4.1)
+				ARCH="armv7athf-neon"
+				;;
+			*)
+				ARCH="armv7a"
+				;;
+		esac
+		echo $(uname -m) | grep -q "aarch64" && ARCH="aarch64"
+		echo $(uname -m) | grep -q "mips" && ARCH="mips32el"
+		echo $(uname -m) | grep -q "sh4" && ARCH="sh4"
+		if echo $(uname -m) | grep -q "armv7l"; then
+			echo $(cat /proc/cpuinfo | grep "CPU part" | uniq) | grep -q "0xc09" && ARCH="cortexa9hf-neon"
+			echo $(cat /proc/cpuinfo | grep "CPU part" | uniq) | grep -q "0xc07" && ARCH="cortexa15hf-neon-vfpv4"
+			if echo $(cat /proc/cpuinfo | grep "CPU part" | uniq) | grep -q "0x00f"; then
+				case "$OEVER" in
+					3.4)
+						ARCH="armv7ahf-neon"
+						;;
+					*)
+						ARCH="cortexa15hf-neon-vfpv4"
+						;;
+				esac
+			fi
+		fi
+	fi
+	if [ "x$ARCH" == "xcortexa7hf" ]; then
+		ARCH="cortexa7hf-vfp"
+	fi
+}
+
+check_compat() {
+	case "$OEVER" in
+		unknown)
+			echo Broken boxbranding ...
+			exit 1
+			;;
+		3.4)
+			;;
+		3.*)
+			echo Your image is EOL ...
+			exit 1
+			;;
+		2.*)
+			echo Your image is EOL ...
+			exit 1
+			;;
+		1.*)
+			echo Your image is EOL ...
+			exit 1
+			;;
+		0.*)
+			echo Your image is EOL ...
+			exit 1
+			;;
+	esac
+	if [ "x$ARCH" == "xunknown" ]; then
+		echo Broken boxbranding ...
+		exit 1
+	fi
+}
+
+get_oever
+get_arch
+check_compat
+
+# Delete all obsolete feeds
+ARCHS="cortexa7hf-vfp cortexa7hf aarch64 armv7ahf-neon armv7athf-neon armv7a-neon armv7a cortexa15hf-neon-vfpv4 cortexa9hf-neon mips32el sh4"
+for OLDARCH in ${ARCHS}
+do
+        if [ -e $D/etc/opkg/${OLDARCH}-3rdparty-secret-feed.conf ]; then
+                rm $D/etc/opkg/${OLDARCH}-3rdparty-secret-feed.conf >/dev/null 2>&1 || true
+        fi
+done
+rm $D/etc/opkg/secret-feed.conf >/dev/null 2>&1 || true
+rm $D/etc/opkg/deb-feed.conf >/dev/null 2>&1 || true
+
+# Install new feed
+echo src/gz ${ARCH}-3rdparty-secret-feed $BASE_FEED/$OEVER/$ARCH > $D/etc/opkg/${ARCH}-3rdparty-secret-feed.conf
+
+# Delete remainders of old CAMs
+if [ -e "$D/etc/init.d/softcam" ]; then
+	if [ "$D/etc/init.d/softcam.cam1" == "`readlink -f $D/etc/init.d/softcam`" ]; then
+		rm $D/etc/init.d/softcam`>/dev/null 2>&1 || true
+	fi
+	if [ "$D/etc/init.d/softcam.cam2" == "`readlink -f $D/etc/init.d/softcam`" ]; then
+		rm $D/etc/init.d/softcam`>/dev/null 2>&1 || true
+	fi
+fi
+
+if [ ! -e "$D/etc/init.d/softcam" ]; then
+	ln -s "softcam.None" "$D/etc/init.d/softcam"
+fi
+
+rm $D/etc/*.emu >/dev/null 2>&1 || true
+rm $D/etc/init.d/softcam.cam1 >/dev/null 2>&1 || true
+rm $D/etc/init.d/softcam.cam2 >/dev/null 2>&1 || true
+
+if [ $(basename $0) == "bash" -o $(basename $0) == "sh" -o $(basename $0) == "feed" -o $(basename $0) == "feed2" ]; then
+	opkg update >/dev/null 2>&1
+	opkg --force-reinstall install softcam-feed-universal >/dev/null 2>&1
+fi
+
+echo "    SoftCAM Feed Universal2 (secret feed) succesfully installed ...     "
+exit 0
+
